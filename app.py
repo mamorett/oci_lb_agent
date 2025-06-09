@@ -8,6 +8,7 @@ import asyncio
 import json
 import re
 from oracle_client import OracleLogsClient  # Your existing Oracle client
+from langchain_ollama import ChatOllama  # Add this import at the top
 
 @dataclass
 class AgentState:
@@ -22,15 +23,30 @@ class AgentState:
     intent: dict = None       # New field for user intent
 
 class OracleGraphAIAgent:
-    def __init__(self):
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
-            temperature=0.7,
-        )
-        self.analyzer = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
-            temperature=0.3,
-        )
+    def __init__(self, use_ollama=True, ollama_model="llama3.1"):
+        if use_ollama:
+            # Use Ollama instead of Gemini
+            self.llm = ChatOllama(
+                model=ollama_model,
+                temperature=0.7,
+                base_url="http://localhost:11434"  # Default Ollama URL
+            )
+            self.analyzer = ChatOllama(
+                model=ollama_model,
+                temperature=0.3,
+                base_url="http://localhost:11434"
+            )
+        else:
+            # Keep Gemini as fallback
+            self.llm = ChatGoogleGenerativeAI(
+                model="gemini-1.5-flash",
+                temperature=0.7,
+            )
+            self.analyzer = ChatGoogleGenerativeAI(
+                model="gemini-1.5-flash",
+                temperature=0.3,
+            )
+        
         # Initialize Oracle client
         self.oracle_client = OracleLogsClient()
 
@@ -258,13 +274,11 @@ class OracleGraphAIAgent:
     - You can query any time range, IP address, country, or location from the complete dataset
     - The data shown below is the COMPLETE result set for this specific query
 
-    Log entries found:
+    Log entries found ({state.oracle_data['count']} total):
     """
-                for i, log in enumerate(state.oracle_data["data"][:10]):  # Show more entries
+                # Show ALL entries instead of limiting to 10
+                for i, log in enumerate(state.oracle_data["data"]):
                     oracle_context += f"- {log.timestamp}: {log.ip} from {log.city}, {log.country} ({log.isp}) via {log.protocol}\n"
-                
-                if state.oracle_data['count'] > 10:
-                    oracle_context += f"... and {state.oracle_data['count'] - 10} more entries (all available in the complete dataset)\n"
             
             elif state.oracle_data["type"] == "analytics":
                 analytics = state.oracle_data["data"]
@@ -281,7 +295,8 @@ class OracleGraphAIAgent:
                 
                 if analytics.get('top_ip'):
                     oracle_context += f"\nComplete Top IP Addresses (from entire dataset):\n"
-                    for ip_data in analytics['top_ip'][:15]:  # Show more
+                    # Show ALL IP addresses instead of limiting to 15
+                    for ip_data in analytics['top_ip']:
                         oracle_context += f"- {ip_data['name']}: {ip_data['count']} requests\n"
                 
                 if analytics.get('top_country'):
@@ -289,7 +304,7 @@ class OracleGraphAIAgent:
                 
                 oracle_context += f"Complete Protocol Distribution: {analytics.get('protocol_distribution', {})}\n"
 
-        # Generate response with Gemini
+        # Generate response with LLM
         prompt = f"""You are an Oracle Cloud logs analyst with COMPLETE DATABASE ACCESS. 
 
     IMPORTANT: You have full access to the entire Oracle Cloud logs database through the Oracle client API. 
@@ -319,6 +334,7 @@ class OracleGraphAIAgent:
             return response.content
         except Exception as e:
             return f"Error generating response: {e}\n\nRaw data summary:\n{oracle_context}"
+
 
     def _format_history(self, chat_history):
         formatted = ""
@@ -552,8 +568,27 @@ st.markdown("*LangGraph + Gemini + Oracle Cloud Logs Analytics*")
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-# Use the new Oracle-enhanced agent
-agent = OracleGraphAIAgent()
+# Configuration options in sidebar
+with st.sidebar:
+    st.header("Configuration")
+    use_ollama = st.checkbox("Use Ollama", value=True, help="Uncheck to use Gemini")
+    
+    if use_ollama:
+        ollama_model = st.selectbox(
+            "Ollama Model",
+            ["mistral-nemo:12b", "deepseek-r1:14b", "codellama:13b", "deepseek-coder:6.7b", "granite-code:8b"],
+            index=0
+        )
+        st.info("Make sure Ollama is running on localhost:11434")
+    else:
+        st.info("Using Google Gemini (requires API key)")
+
+# Initialize agent with selected configuration
+if use_ollama:
+    agent = OracleGraphAIAgent(use_ollama=True, ollama_model=ollama_model)
+else:
+    agent = OracleGraphAIAgent(use_ollama=False)
+
 
 # Display existing chat history
 for msg in st.session_state.chat_history:
